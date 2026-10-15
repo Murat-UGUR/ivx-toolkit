@@ -47,6 +47,8 @@ Run `ivx doctor` first: it checks each of these layers in order and tells you wh
 - `ivx doctor`: step-by-step connectivity diagnostics (DNS, TCP, TLS, login, API access)
 - Save raw API responses (`--save-raw`), re-parse them offline (`ivx parse`) and mask internal
   details before sharing them (`ivx sanitize`)
+- Local submission history: `--skip-known` reuses recent verdicts instead of resubmitting
+  the same file, and `ivx history` lists past analyses
 - Works on Linux and Windows (both tested in CI)
 - `--fail-on-malicious` exit code for scripts and pipelines
 - Credentials only from environment variables or an interactive prompt — never on the
@@ -146,6 +148,26 @@ are derived from the indicator value, so exporting the same sample again does no
 duplicates in a threat intelligence platform. `ivx results <id>` does not know what was
 submitted, so it can only export the hashes IVX reports.
 
+### Skip files that were already analysed
+
+Every finished file analysis is recorded in a small local database. With `--skip-known`, a
+file whose SHA-256 was already analysed **on the same appliance** within `--max-age` days
+(default 30) is not uploaded again; its stored result is reused and marked `(cached)`:
+
+```bash
+ivx submit ./share-scan -r --wait --skip-known
+ivx submit ./share-scan -r --wait --skip-known --max-age 7
+ivx history                       # recent analyses
+ivx history --sha256 <hash>       # everything known about one file
+```
+
+The full raw response is stored with each entry, so cached results keep their alerts and
+IOCs. Errors and unfinished analyses are never cached. Only the file's base name is stored,
+never its path or contents. Location: `$IVX_HISTORY`, otherwise
+`%LOCALAPPDATA%\ivx-toolkit\history.db` on Windows and
+`~/.local/share/ivx-toolkit/history.db` elsewhere (owner-only permissions on Linux/macOS).
+Use `--no-history` to neither read nor write it.
+
 ### Raw responses: save, re-parse offline, sanitise
 
 During a live test, keep the raw API responses so they can be analysed later without the
@@ -218,6 +240,19 @@ pytest
 ruff check . && ruff format --check .
 ```
 
+### Releases
+
+Bump `version` in `pyproject.toml` and `src/ivx_toolkit/__init__.py`, update the
+CHANGELOG, then create a matching tag (`v0.4.0`) from GitHub's *Releases > Draft a new
+release* page or with `git tag v0.4.0 && git push origin v0.4.0`. The release workflow checks
+that the tag matches the package version, runs the tests, builds the wheel and source
+archive, and publishes them on a GitHub Release.
+
+### Reporting live test results
+
+Use the **Live test report** issue form. It asks for the IVX version, the `ivx doctor`
+output and an optional sanitised raw response. See also [SECURITY.md](SECURITY.md).
+
 ## Roadmap
 
 - [ ] Validate against a live IVX appliance (see checklist)
@@ -225,9 +260,10 @@ ruff check . && ruff format --check .
 - [x] Connectivity diagnostics (`ivx doctor`)
 - [x] Raw response capture, offline parsing and sanitising
 - [x] Windows support
+- [x] Local history and `--skip-known`
 - [ ] Network IOCs (domains, IPs) from extended results, once the live response format is known
 - [ ] MITRE ATT&CK technique extraction
-- [ ] Hash pre-check to skip already analysed samples
+- [ ] Server-side hash lookup, if the appliance API offers one (local history covers it today)
 - [ ] Appliance health checks (queue, license, guest images)
 
 ## Türkçe özet
@@ -239,6 +275,8 @@ Araç IVX cihazının **üzerinde çalışmaz**; ayrı bir makineden HTTPS üzer
 Bağlantıyı adım adım sınamak için önce `ivx doctor` çalıştırın. Ham API yanıtlarını
 `--save-raw` ile kaydedip `ivx parse` ile cihaz olmadan yeniden işleyebilir, paylaşmadan önce
 `ivx sanitize` ile iç IP, MAC, e-posta ve host adlarını maskeleyebilirsiniz.
+`--skip-known` ile aynı cihazda yakın zamanda analiz edilmiş dosyalar yeniden gönderilmez;
+sonuç yerel geçmişten alınır (`ivx history`).
 **Henüz canlı bir IVX cihazında test edilmedi**; yalnızca dahili mock sunucuya karşı doğrulandı.
 Üretimde kullanmadan önce lab ortamında deneyin.
 

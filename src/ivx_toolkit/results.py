@@ -52,6 +52,7 @@ class AnalysisResult:
     target_kind: str = ""  # "file", "url" or "" (unknown, e.g. `ivx results <id>`)
     target_sha256: str = ""  # sha256 of the submitted file, computed locally
     target_urls: list[str] = field(default_factory=list)
+    cached_from: str = ""  # "<submission_id> @ <time>" when reused from local history
 
     @property
     def verdict(self) -> str:

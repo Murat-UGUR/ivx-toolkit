@@ -24,7 +24,10 @@ def settings(mock_ivx):
 
 
 @pytest.fixture()
-def mock_env(mock_ivx, monkeypatch):
+def mock_env(mock_ivx, monkeypatch, tmp_path_factory):
+    # A separate directory: never the real history, and never inside a folder a test submits.
+    history = tmp_path_factory.mktemp("history") / "history.db"
+    monkeypatch.setenv("IVX_HISTORY", str(history))
     monkeypatch.setenv("IVX_HOST", "127.0.0.1")
     monkeypatch.setenv("IVX_PORT", str(mock_ivx))
     monkeypatch.setenv("IVX_SCHEME", "http")

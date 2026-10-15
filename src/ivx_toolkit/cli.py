@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import logging
 import os
 import sys
@@ -13,6 +14,7 @@ from pathlib import Path
 from . import __version__, doctor
 from .client import IVXClient, IVXError, SubmissionOptions
 from .config import Settings
+from .history import Entry, History
 from .report import FORMATS, render
 from .results import AnalysisResult, parse_results
 from .sanitize import sanitize
@@ -127,48 +129,117 @@ def cmd_doctor(client: IVXClient, args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _open_history(args: argparse.Namespace) -> History | None:
+    if args.no_history:
+        return None
+    return History(args.history)
+
+
+def _cached_result(entry: Entry, target: str, sha256: str) -> AnalysisResult:
+    result = parse_results(entry.submission_id, entry.content_type, entry.raw, target=target)
+    result.cached_from = f"{entry.submission_id} @ {entry.submitted_at}"
+    result.target_kind, result.target_sha256 = "file", sha256
+    return result
+
+
 def cmd_submit(client: IVXClient, args: argparse.Namespace) -> int:
     opts = _options(args)
-    submissions: list[_Submission] = []
-
-    for f in _collect_files(args.paths, args.recursive):
-        digest = _sha256(f)
-        sid = client.submit_file(f, opts)
-        _eprint(f"submitted {f}  sha256={digest}  id={sid}")
-        submissions.append(_Submission(sid, str(f), "file", sha256=digest))
-
-    if args.url:
-        sid = client.submit_urls(args.url, opts)
-        _eprint(f"submitted {len(args.url)} URL(s)  id={sid}")
-        submissions.append(_Submission(sid, ", ".join(args.url), "url", urls=list(args.url)))
-
-    if not submissions:
-        _eprint("Nothing to submit. Give file/folder paths and/or --url.")
+    host = client.settings.host
+    history = _open_history(args)
+    if args.skip_known and history is None:
+        _eprint("--skip-known needs the local history; drop --no-history.")
         return 2
+    # Keeps input order: each item is a pending submission or a result reused from history.
+    items: list[_Submission | AnalysisResult] = []
+    try:
+        for f in _collect_files(args.paths, args.recursive):
+            digest = _sha256(f)
+            entry = history.lookup(digest, host, args.max_age) if args.skip_known else None
+            if entry:
+                _eprint(
+                    f"known   {f}  sha256={digest}  verdict={entry.verdict} "
+                    f"(submission {entry.submission_id}, {entry.submitted_at}); not resubmitted"
+                )
+                items.append(_cached_result(entry, str(f), digest))
+                continue
+            sid = client.submit_file(f, opts)
+            _eprint(f"submitted {f}  sha256={digest}  id={sid}")
+            items.append(_Submission(sid, str(f), "file", sha256=digest))
 
-    if not args.wait:
-        for s in submissions:
-            print(f"{s.sid}\t{s.target}")
-        return 0
+        if args.url:
+            sid = client.submit_urls(args.url, opts)
+            _eprint(f"submitted {len(args.url)} URL(s)  id={sid}")
+            items.append(_Submission(sid, ", ".join(args.url), "url", urls=list(args.url)))
 
-    results: list[AnalysisResult] = []
-    for s in submissions:
-        try:
-            state = client.wait(
-                s.sid,
-                max_wait=args.max_wait,
-                interval=args.interval,
-                on_poll=lambda sid, st: log.info("%s: %s", sid, st),
-            )
-            result = _fetch_result(
-                client, s.sid, s.target, args.info_level, state, save_raw=args.save_raw
-            )
-        except IVXError as exc:
-            _eprint(f"[!] {s.sid}: {exc}")
-            result = AnalysisResult(submission_id=s.sid, target=s.target, error=str(exc))
-        results.append(s.attach(result))
+        if not items:
+            _eprint("Nothing to submit. Give file/folder paths and/or --url.")
+            return 2
+
+        if not args.wait:
+            for item in items:
+                if isinstance(item, AnalysisResult):
+                    print(f"{item.submission_id}\t{item.target}\tcached:{item.verdict}")
+                else:
+                    print(f"{item.sid}\t{item.target}")
+            return 0
+
+        results: list[AnalysisResult] = []
+        for item in items:
+            if isinstance(item, AnalysisResult):
+                results.append(item)
+                continue
+            s = item
+            try:
+                state = client.wait(
+                    s.sid,
+                    max_wait=args.max_wait,
+                    interval=args.interval,
+                    on_poll=lambda sid, st: log.info("%s: %s", sid, st),
+                )
+                ctype, body = client.results_raw(s.sid, args.info_level)
+                _save_raw(args.save_raw, s.sid, ctype, body)
+                result = s.attach(parse_results(s.sid, ctype, body, target=s.target, status=state))
+                if history is not None and s.kind == "file":
+                    history.record(
+                        s.sha256,
+                        s.target,
+                        host,
+                        s.sid,
+                        result.verdict,
+                        ", ".join(result.malware_names),
+                        ctype,
+                        body,
+                    )
+            except IVXError as exc:
+                _eprint(f"[!] {s.sid}: {exc}")
+                result = s.attach(
+                    AnalysisResult(submission_id=s.sid, target=s.target, error=str(exc))
+                )
+            results.append(result)
+    finally:
+        if history is not None:
+            history.close()
+
     _emit(results, args.format, args.output)
     return 1 if any(r.verdict == "malicious" for r in results) and args.fail_on_malicious else 0
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    with History(args.history) as history:
+        entries = history.recent(limit=args.limit, sha256=args.sha256)
+    if args.format == "json":
+        print(json.dumps([e.__dict__ | {"raw": None} for e in entries], indent=2))
+        return 0
+    if not entries:
+        _eprint(f"No entries in {history.path}")
+        return 0
+    cols = ["submitted_at", "verdict", "submission_id", "host", "file_name", "sha256", "malware"]
+    rows = [{c: str(getattr(e, c) or "-") for c in cols} for e in entries]
+    widths = {c: max(len(c), *(len(r[c]) for r in rows)) for c in cols}
+    print("  ".join(c.upper().ljust(widths[c]) for c in cols))
+    for r in rows:
+        print("  ".join(r[c].ljust(widths[c]) for c in cols))
+    return 0
 
 
 def cmd_status(client: IVXClient, args: argparse.Namespace) -> int:
@@ -281,6 +352,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_sub.add_argument("--max-wait", type=int, default=1800, help="Max seconds to wait")
     p_sub.add_argument("--interval", type=int, default=15, help="Polling interval in seconds")
     p_sub.add_argument(
+        "--skip-known",
+        action="store_true",
+        help="Do not resubmit files already analysed on this appliance (same SHA-256); "
+        "reuse the result from the local history",
+    )
+    p_sub.add_argument(
+        "--max-age",
+        type=float,
+        default=30,
+        metavar="DAYS",
+        help="With --skip-known: only reuse results newer than this (default 30 days)",
+    )
+    p_sub.add_argument(
+        "--no-history", action="store_true", help="Do not read or write the local history"
+    )
+    p_sub.add_argument(
         "--fail-on-malicious",
         action="store_true",
         help="Exit with code 1 if any result is malicious",
@@ -297,6 +384,18 @@ def build_parser() -> argparse.ArgumentParser:
             "--save-raw",
             metavar="DIR",
             help="Also save each raw results response to DIR/<id>.xml|json",
+        )
+
+    p_hist = sub.add_parser("history", help="Show the local submission history")
+    p_hist.add_argument("--limit", type=int, default=50, help="Number of entries (default 50)")
+    p_hist.add_argument("--sha256", help="Only entries for this file hash")
+    p_hist.add_argument("-f", "--format", choices=["table", "json"], default="table")
+
+    for p in (p_sub, p_hist):
+        p.add_argument(
+            "--history",
+            metavar="PATH",
+            help="History database (default: $IVX_HISTORY or the user data directory)",
         )
 
     p_parse = sub.add_parser(
@@ -351,7 +450,7 @@ COMMANDS = {
     "status": cmd_status,
     "results": cmd_results,
 }
-OFFLINE_COMMANDS = {"parse": cmd_parse, "sanitize": cmd_sanitize}
+OFFLINE_COMMANDS = {"parse": cmd_parse, "sanitize": cmd_sanitize, "history": cmd_history}
 
 
 def _safe_console() -> None:

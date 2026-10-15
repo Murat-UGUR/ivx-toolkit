@@ -8,6 +8,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Pending
 - Validation against a live Trellix IVX appliance ([checklist](docs/live-test-checklist.md)).
 
+## [0.4.0] - 2026-10-15
+
+### Added
+- Local submission history (SQLite in the user data directory, owner-only on POSIX).
+- `ivx submit --skip-known [--max-age DAYS]`: files already analysed on the same appliance
+  are not resubmitted; the stored result (with alerts and IOCs) is reused and marked
+  `(cached)`. `--no-history` disables reading and writing the history.
+- `ivx history [--sha256 HASH] [-f json]` lists past analyses.
+- Release workflow: pushing a `v*` tag that matches the package version tests, builds and
+  publishes a GitHub Release with the wheel and source archive.
+- "Live test report" issue form and SECURITY.md.
+
+### Known limitations
+- Still **not tested on a live IVX appliance**.
+
 ## [0.3.0] - 2026-10-15
 
 ### Added

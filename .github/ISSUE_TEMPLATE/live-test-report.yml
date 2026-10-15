@@ -1,0 +1,71 @@
+name: Live test report
+description: Results of running ivx-toolkit against a real IVX appliance
+title: "[live test] IVX <version>: <short summary>"
+labels: ["live-test"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing against a real appliance. **Never paste customer data, credentials,
+        internal host names, IP addresses or malware samples.** Run `ivx sanitize` on any raw
+        response and review the output by eye before attaching it.
+  - type: input
+    id: ivx_version
+    attributes:
+      label: IVX version / build
+      placeholder: e.g. 10.0.x
+    validations:
+      required: true
+  - type: dropdown
+    id: api_version
+    attributes:
+      label: API version (IVX_API_VERSION)
+      options: ["v2.0.0", "v1.2.0"]
+    validations:
+      required: true
+  - type: input
+    id: toolkit_version
+    attributes:
+      label: ivx-toolkit version (`ivx --version`)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and Python version of the machine running the toolkit
+      placeholder: e.g. Windows 11, Python 3.12
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `ivx doctor`
+      description: Host names and addresses can be replaced by hand.
+      render: text
+  - type: checkboxes
+    id: works
+    attributes:
+      label: What worked?
+      options:
+        - label: Login (`ivx check`)
+        - label: File submission
+        - label: URL submission
+        - label: Status polling
+        - label: Results parsed with the expected verdict
+        - label: IOC export imported into a TIP / SIEM
+  - type: dropdown
+    id: format
+    attributes:
+      label: Results response format
+      options: ["XML", "JSON", "Did not get that far"]
+  - type: textarea
+    id: problem
+    attributes:
+      label: What went wrong?
+      description: Command, error message and what you expected instead.
+  - type: textarea
+    id: raw
+    attributes:
+      label: Sanitised raw response (optional)
+      description: |
+        Output of `ivx results <id> --info-level extended --save-raw raw/`, passed through
+        `ivx sanitize raw/<id>.xml --mask <your-domain> --host-from-env`. Review before posting.
+      render: xml

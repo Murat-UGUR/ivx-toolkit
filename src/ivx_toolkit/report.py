@@ -21,7 +21,7 @@ def _row(r: AnalysisResult) -> dict[str, str]:
     return {
         "submission_id": r.submission_id,
         "target": r.target,
-        "verdict": r.verdict,
+        "verdict": r.verdict + (" (cached)" if r.cached_from else ""),
         "max_severity": r.max_severity or "-",
         "alerts": str(len(r.alerts)),
         "malware": ", ".join(r.malware_names) or "-",
