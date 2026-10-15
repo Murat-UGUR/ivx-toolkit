@@ -40,9 +40,15 @@ Use a **lab** appliance and harmless test files (e.g. the EICAR test string) onl
 6. **Batch + report**
    - [ ] `ivx submit ./folder --wait -f html -o report.html` produces a correct report
    - [ ] `ivx submit ./folder --wait -f stix -o iocs.json` imports cleanly into your TIP / SIEM
-7. **Session expiry**
+7. **Lookup and behaviour**
+   - [ ] `ivx lookup eicar.com` reports `known-malicious` after it has been analysed
+   - [ ] `ivx submit <sample> --wait --info-level extended -f html -o r.html` shows
+         signatures, processes and files under "Behaviour"
+   - [ ] Does the extended response contain a network section (domains / IPs)? What is it
+         called? ______
+8. **Session expiry**
    - [ ] A run longer than 15 minutes re-authenticates automatically
-8. **Logout**
+9. **Logout**
    - [ ] No errors at the end of a run (logout is best-effort)
 
 ## Reporting differences

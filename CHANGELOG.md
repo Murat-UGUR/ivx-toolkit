@@ -8,6 +8,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Pending
 - Validation against a live Trellix IVX appliance ([checklist](docs/live-test-checklist.md)).
 
+## [0.5.0] - 2026-10-15
+
+Feature complete. 1.0.0 will follow the live appliance test.
+
+### Added
+- `ivx lookup FILE|MD5...`: query existing alerts on the appliance by MD5
+  (`GET /wsapis/<ver>/alerts?md5=`) without uploading; `known-malicious`,
+  `known-suspicious` or `no-alerts`, with `--fail-on-malicious`.
+- Sandbox behaviour from extended results (`explanation > osChanges`): signatures
+  (`malicious-alert`), processes (`process`, `process_informational`) and file activity
+  (`file_informational`), parsed from XML and JSON and shown in the JSON and HTML reports.
+- The mock server returns OS changes for `info_level=extended` and answers MD5 alert lookups.
+- Installation straight from GitHub or from a release wheel.
+
+### Changed
+- README roadmap replaced by a scope section. MITRE ATT&CK mapping, network IOCs and
+  appliance health are documented as out of scope because the public API documentation does
+  not define them.
+
+### Known limitations
+- Still **not tested on a live IVX appliance**.
+
 ## [0.4.0] - 2026-10-15
 
 ### Added

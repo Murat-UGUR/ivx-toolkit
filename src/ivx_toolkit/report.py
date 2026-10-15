@@ -65,6 +65,56 @@ def to_csv(results: Sequence[AnalysisResult]) -> str:
 _VERDICT_CLASS = {"malicious": "bad", "suspicious": "warn", "no-detection": "ok"}
 
 
+_BEHAVIOUR_LIMIT = 50  # per list, keeps reports readable for noisy samples
+
+
+def _esc(value: str) -> str:
+    return html.escape(value or "-")
+
+
+def _behaviour_html(r: AnalysisResult) -> str:
+    if not r.has_behaviour:
+        return ""
+    sigs, procs, files = [], [], []
+    for a in r.alerts:
+        sigs += [x for x in a.signatures if x not in sigs]
+        procs += [x for x in a.processes if x not in procs]
+        files += [x for x in a.files if x not in files]
+
+    def section(title: str, items: list, fmt) -> str:
+        if not items:
+            return ""
+        shown = "".join(f"<li>{fmt(i)}</li>" for i in items[:_BEHAVIOUR_LIMIT])
+        more = len(items) - _BEHAVIOUR_LIMIT
+        extra = f"<li class='muted'>… {more} more (see JSON output)</li>" if more > 0 else ""
+        return f"<h4>{title} ({len(items)})</h4><ul>{shown}{extra}</ul>"
+
+    body = (
+        section(
+            "Signatures",
+            sigs,
+            lambda x: f"<b>{_esc(x.classtype)}</b> {html.escape(x.message)}",
+        )
+        + section(
+            "Processes",
+            procs,
+            lambda x: (
+                f"<code>{_esc(x.cmdline or x.image)}</code>"
+                + (f" <span class='muted'>pid {html.escape(x.pid)}</span>" if x.pid else "")
+            ),
+        )
+        + section(
+            "Files",
+            files,
+            lambda x: (
+                f"<span class='muted'>{_esc(x.mode)}</span> <code>{_esc(x.path)}</code>"
+                + (f" <span class='muted'>md5 {html.escape(x.md5)}</span>" if x.md5 else "")
+            ),
+        )
+    )
+    return f"<details><summary>Behaviour</summary>{body}</details>"
+
+
 def to_html(results: Sequence[AnalysisResult], title: str = "IVX analysis report") -> str:
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     counts: dict[str, int] = {}
@@ -96,6 +146,7 @@ def to_html(results: Sequence[AnalysisResult], title: str = "IVX analysis report
             f"<td>{html.escape(row['max_severity'])}</td>"
             f"<td>{html.escape(row['alerts'])}"
             + (f"<ul>{details}</ul>" if details else "")
+            + _behaviour_html(r)
             + "</td></tr>"
         )
 
@@ -116,7 +167,9 @@ th,td {{ border-bottom:1px solid var(--line); padding:8px; text-align:left; vert
 th {{ font-size:12px; text-transform:uppercase; color:var(--muted); }}
 td:nth-child(2) {{ word-break:break-all; }} ul {{ margin:6px 0 0; padding-left:18px; }}
 .v {{ font-weight:600; }} .bad {{ color:var(--bad); }} .warn {{ color:var(--warn); }}
-.ok {{ color:var(--ok); }} code {{ font-size:12px; }}
+.ok {{ color:var(--ok); }} code {{ font-size:12px; word-break:break-all; }}
+.muted {{ color:var(--muted); }} details {{ margin-top:6px; }}
+summary {{ cursor:pointer; color:var(--muted); }} h4 {{ margin:8px 0 2px; font-size:13px; }}
 </style></head><body>
 <h1>{html.escape(title)}</h1>
 <div class="meta">Generated {generated} by ivx-toolkit · {summary}</div>

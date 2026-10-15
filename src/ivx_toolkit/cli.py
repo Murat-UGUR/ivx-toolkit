@@ -242,6 +242,74 @@ def cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def _lookup_targets(values: list[str]) -> list[tuple[str, str, str]]:
+    """Return (label, md5, sha256) for each file path or MD5 hash given."""
+    targets: list[tuple[str, str, str]] = []
+    for value in values:
+        path = Path(value)
+        low = value.strip().lower()
+        if path.is_file():
+            md5, sha = hashlib.md5(), hashlib.sha256()  # noqa: S324 - the API looks up MD5
+            with path.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    md5.update(chunk)
+                    sha.update(chunk)
+            targets.append((str(path), md5.hexdigest(), sha.hexdigest()))
+        elif len(low) == 32 and all(c in "0123456789abcdef" for c in low):
+            targets.append((low, low, ""))
+        elif len(low) == 64 and all(c in "0123456789abcdef" for c in low):
+            raise IVXError(
+                "The alerts API looks files up by MD5 only. Pass the file itself or its MD5."
+            )
+        else:
+            raise IVXError(f"Not a file or an MD5 hash: {value}")
+    return targets
+
+
+def cmd_lookup(client: IVXClient, args: argparse.Namespace) -> int:
+    rows = []
+    any_malicious = False
+    for label, md5, sha256 in _lookup_targets(args.targets):
+        ctype, body = client.alerts_by_md5(md5, args.info_level)
+        result = parse_results(md5, ctype, body, target=label)
+        verdict = {
+            "malicious": "known-malicious",
+            "suspicious": "known-suspicious",
+        }.get(result.verdict, "no-alerts")
+        any_malicious |= verdict == "known-malicious"
+        rows.append(
+            {
+                "target": label,
+                "md5": md5,
+                "sha256": sha256,
+                "result": verdict,
+                "alerts": len(result.alerts),
+                "alert_ids": [a.id for a in result.alerts],
+                "malware": result.malware_names,
+            }
+        )
+    if args.format == "json":
+        print(json.dumps(rows, indent=2, ensure_ascii=False))
+    else:
+        cols = ["result", "alerts", "md5", "malware", "target"]
+        cells = [
+            {
+                "result": r["result"],
+                "alerts": str(r["alerts"]),
+                "md5": r["md5"],
+                "malware": ", ".join(r["malware"]) or "-",
+                "target": r["target"],
+            }
+            for r in rows
+        ]
+        widths = {c: max(len(c), *(len(x[c]) for x in cells)) for c in cols}
+        print("  ".join(c.upper().ljust(widths[c]) for c in cols))
+        for x in cells:
+            print("  ".join(x[c].ljust(widths[c]) for c in cols))
+        _eprint("'no-alerts' means IVX has no alert for that hash, not that the file is clean.")
+    return 1 if any_malicious and args.fail_on_malicious else 0
+
+
 def cmd_status(client: IVXClient, args: argparse.Namespace) -> int:
     for sid in args.ids:
         print(f"{sid}\t{client.status(sid)}")
@@ -375,6 +443,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="Show submission status").add_argument("ids", nargs="+")
 
+    p_look = sub.add_parser(
+        "lookup",
+        help="Ask the appliance for existing alerts about files or MD5 hashes (no upload)",
+    )
+    p_look.add_argument("targets", nargs="+", help="Files (hashed locally) or MD5 hashes")
+    p_look.add_argument("-f", "--format", choices=["table", "json"], default="table")
+    p_look.add_argument(
+        "--info-level", choices=["concise", "normal", "extended"], help="Alert detail level"
+    )
+    p_look.add_argument(
+        "--fail-on-malicious",
+        action="store_true",
+        help="Exit with code 1 if any target has a malicious alert",
+    )
+
     p_res = sub.add_parser("results", help="Fetch analysis results")
     p_res.add_argument("ids", nargs="+")
     p_res.add_argument("--raw", action="store_true", help="Print the raw API response")
@@ -449,6 +532,7 @@ COMMANDS = {
     "submit": cmd_submit,
     "status": cmd_status,
     "results": cmd_results,
+    "lookup": cmd_lookup,
 }
 OFFLINE_COMMANDS = {"parse": cmd_parse, "sanitize": cmd_sanitize, "history": cmd_history}
 

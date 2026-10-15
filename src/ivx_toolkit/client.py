@@ -7,6 +7,7 @@ Endpoints implemented (per the public Trellix IVX API docs):
     POST /wsapis/<ver>/submissions/url           JSON body with "urls"
     GET  /wsapis/<ver>/submissions/status/<id>   {"submissionStatus": "In Progress" | "Done"}
     GET  /wsapis/<ver>/submissions/results/<id>  alerts (XML by default, JSON if supported)
+    GET  /wsapis/<ver>/alerts?md5=<hash>         existing alerts for a file hash
 
 NOTE: This code has NOT yet been validated against a live IVX appliance.
 Paths and payload shapes follow the vendor documentation; differences between
@@ -272,6 +273,20 @@ class IVXClient:
         """Return (content_type, body) for the analysis results."""
         params = {"info_level": info_level} if info_level else None
         resp = self._request("GET", f"submissions/results/{submission_id}", params=params)
+        return resp.headers.get("Content-Type", ""), resp.text
+
+    def alerts_by_md5(self, md5: str, info_level: str | None = None) -> tuple[str, str]:
+        """Return (content_type, body) of existing alerts for an MD5 (not time-limited).
+
+        No alerts does not mean the file is clean: it may simply never have been analysed.
+        """
+        md5 = md5.strip().lower()
+        if len(md5) != 32 or any(c not in "0123456789abcdef" for c in md5):
+            raise IVXError(f"Not an MD5 hash: {md5!r}")
+        params = {"md5": md5}
+        if info_level:
+            params["info_level"] = info_level
+        resp = self._request("GET", "alerts", params=params)
         return resp.headers.get("Content-Type", ""), resp.text
 
     def wait(

@@ -5,7 +5,7 @@ Submit files, folders and URLs, wait for the analysis, and export the verdicts a
 JSON, CSV or a standalone HTML report, plus IOCs as CSV or a STIX 2.1 bundle.
 
 > [!WARNING]
-> **Status: untested on a live IVX appliance.**
+> **Status: feature complete (v0.5), but untested on a live IVX appliance.**
 > This project was written against the public Trellix IVX API documentation and is verified
 > only against the bundled mock server. Endpoint paths, response formats (XML vs JSON) and
 > field names may differ between appliance versions. Validate it in a lab before relying on it
@@ -49,6 +49,9 @@ Run `ivx doctor` first: it checks each of these layers in order and tells you wh
   details before sharing them (`ivx sanitize`)
 - Local submission history: `--skip-known` reuses recent verdicts instead of resubmitting
   the same file, and `ivx history` lists past analyses
+- `ivx lookup`: ask the appliance for existing alerts about a file or MD5, without uploading
+- Sandbox behaviour from extended results: signatures, processes and file activity in the
+  JSON and HTML reports
 - Works on Linux and Windows (both tested in CI)
 - `--fail-on-malicious` exit code for scripts and pipelines
 - Credentials only from environment variables or an interactive prompt — never on the
@@ -57,11 +60,24 @@ Run `ivx doctor` first: it checks each of these layers in order and tells you wh
 
 ## Installation
 
+Directly from GitHub:
+
+```bash
+pip install "git+https://github.com/Murat-UGUR/ivx-toolkit.git"
+```
+
+From a release: download the `.whl` file from the
+[Releases](https://github.com/Murat-UGUR/ivx-toolkit/releases) page and
+`pip install ivx_toolkit-<version>-py3-none-any.whl` (handy on machines without GitHub
+access).
+
+For development:
+
 ```bash
 git clone https://github.com/Murat-UGUR/ivx-toolkit.git
 cd ivx-toolkit
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 Requires Python 3.9+ and `requests`.
@@ -148,6 +164,34 @@ are derived from the indicator value, so exporting the same sample again does no
 duplicates in a threat intelligence platform. `ivx results <id>` does not know what was
 submitted, so it can only export the hashes IVX reports.
 
+### Check a file without uploading it
+
+```bash
+ivx lookup suspicious.docx            # hashed locally, looked up by MD5
+ivx lookup 44d88612fea8a8f36de82e1278abb02f --fail-on-malicious
+```
+
+`ivx lookup` asks the appliance for alerts it already has about a file
+(`GET /wsapis/<ver>/alerts?md5=…`). Results are `known-malicious`, `known-suspicious` or
+`no-alerts`. **`no-alerts` does not mean clean**: the file may simply never have been seen.
+The alerts API matches by MD5 only, so give the file itself or its MD5.
+
+### Sandbox behaviour
+
+With `--info-level extended`, the JSON and HTML reports include what the sample did, taken
+from the documented `explanation > osChanges` section:
+
+- **signatures** (`malicious-alert`: class type and message)
+- **processes** (command line, image, PID / parent, hashes)
+- **file activity** (path, mode such as created/deleted, hashes)
+
+```bash
+ivx submit sample.exe --wait --info-level extended -f html -o report.html
+```
+
+Behaviour data is shown for context only; dropped-file hashes are **not** exported as IOCs,
+because files written by a sample are not necessarily malicious.
+
 ### Skip files that were already analysed
 
 Every finished file analysis is recorded in a small local database. With `--skip-known`, a
@@ -229,6 +273,7 @@ To rehearse certificate handling, start it with `--cert cert.pem --key key.pem` 
 | Submit URL | `POST /wsapis/<ver>/submissions/url` |
 | Status | `GET /wsapis/<ver>/submissions/status/<id>` |
 | Results | `GET /wsapis/<ver>/submissions/results/<id>?info_level=…` |
+| Lookup | `GET /wsapis/<ver>/alerts?md5=<hash>[&info_level=…]` |
 
 Reference: [Trellix IVX API documentation](https://docs-dr.trellix.com/network-and-platform/docs/ivx-api-endpoints).
 
@@ -253,18 +298,31 @@ archive, and publishes them on a GitHub Release.
 Use the **Live test report** issue form. It asks for the IVX version, the `ivx doctor`
 output and an optional sanitised raw response. See also [SECURITY.md](SECURITY.md).
 
-## Roadmap
+## Scope
 
-- [ ] Validate against a live IVX appliance (see checklist)
-- [x] IOC export (STIX 2.1 / CSV)
+Done:
+
+- [x] Submission, polling, results, reports (table, JSON, CSV, HTML)
+- [x] IOC export (CSV, STIX 2.1)
 - [x] Connectivity diagnostics (`ivx doctor`)
 - [x] Raw response capture, offline parsing and sanitising
-- [x] Windows support
-- [x] Local history and `--skip-known`
-- [ ] Network IOCs (domains, IPs) from extended results, once the live response format is known
-- [ ] MITRE ATT&CK technique extraction
-- [ ] Server-side hash lookup, if the appliance API offers one (local history covers it today)
-- [ ] Appliance health checks (queue, license, guest images)
+- [x] Local history and `--skip-known`; server-side lookup (`ivx lookup`)
+- [x] Sandbox behaviour from extended results
+- [x] Linux and Windows support, CI, release workflow
+
+Left for after the live test:
+
+- [ ] Validate against a live IVX appliance ([checklist](docs/live-test-checklist.md)), then
+      release **1.0.0**
+
+Deliberately out of scope, because the public API documentation does not define them:
+
+- **MITRE ATT&CK mapping**: the documented alert response has no ATT&CK fields. Mapping
+  signatures to techniques by guesswork would produce misleading data.
+- **Network IOCs (domains, IPs contacted)**: no dedicated network section is documented for
+  the results response. Can be added once a sanitised live response shows the format.
+- **Appliance health (guest images, queue, licence)**: exposed through the appliance CLI and
+  web UI, not through the documented web services API.
 
 ## Türkçe özet
 
@@ -276,7 +334,10 @@ Bağlantıyı adım adım sınamak için önce `ivx doctor` çalıştırın. Ham
 `--save-raw` ile kaydedip `ivx parse` ile cihaz olmadan yeniden işleyebilir, paylaşmadan önce
 `ivx sanitize` ile iç IP, MAC, e-posta ve host adlarını maskeleyebilirsiniz.
 `--skip-known` ile aynı cihazda yakın zamanda analiz edilmiş dosyalar yeniden gönderilmez;
-sonuç yerel geçmişten alınır (`ivx history`).
+sonuç yerel geçmişten alınır (`ivx history`). `ivx lookup` dosyayı yüklemeden cihazdaki mevcut
+alarmları MD5 ile sorgular. `--info-level extended` ile raporlara imza, süreç ve dosya
+davranışları eklenir. Proje özellik olarak tamamdır; 1.0.0 sürümü canlı testten sonra
+çıkacaktır.
 **Henüz canlı bir IVX cihazında test edilmedi**; yalnızca dahili mock sunucuya karşı doğrulandı.
 Üretimde kullanmadan önce lab ortamında deneyin.
 

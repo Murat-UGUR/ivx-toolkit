@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import itertools
 import json
+import re
 import secrets
 import ssl
 import threading
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 USERNAME = "admin"
@@ -37,7 +40,22 @@ class _State:
         self.subs: dict[str, dict] = {}
 
 
-def _result_xml(sid: str, sub: dict) -> str:
+_OS_CHANGES = (
+    "<os-changes>"
+    '<malicious-alert classtype="Mock.Persistence">'
+    "<display-msg>Adds a Run key for persistence</display-msg></malicious-alert>"
+    '<process mode="started"><value>C:\\Users\\admin\\AppData\\Local\\Temp\\dropper.exe</value>'
+    "<cmdline>dropper.exe /silent</cmdline><pid>4242</pid><ppid>1337</ppid>"
+    "<parentname>explorer.exe</parentname>"
+    "<md5sum>0cc175b9c0f1b6a831c399e269772661</md5sum></process>"
+    '<file_informational mode="created">'
+    "<value>C:\\ProgramData\\svc\\payload.dll</value>"
+    "<md5sum>92eb5ffee6ae2fec3ad71c777531578f</md5sum></file_informational>"
+    "</os-changes>"
+)
+
+
+def _result_xml(sid: str, sub: dict, extended: bool = False) -> str:
     if not sub["malicious"]:
         return (
             '<?xml version="1.0" encoding="UTF-8"?>'
@@ -54,10 +72,25 @@ def _result_xml(sid: str, sub: dict) -> str:
         '<malware name="Mock.Generic.Trojan">'
         "<md5sum>44d88612fea8a8f36de82e1278abb02f</md5sum>"
         "<sha256>275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f</sha256>"
-        "</malware></malware-detected></explanation>"
+        "</malware></malware-detected>"
+        f"{_OS_CHANGES if extended else ''}"
+        "</explanation>"
         "<occurred>2026-01-01 00:00:00 +0000</occurred>"
         "</alert></alerts>"
     )
+
+
+def _uploaded_file(content_type: str, body: bytes) -> bytes:
+    """Return the bytes of the multipart part named "filename" (best effort)."""
+    match = re.search(r"boundary=([^;]+)", content_type or "")
+    if not match:
+        return b""
+    boundary = b"--" + match.group(1).strip().strip('"').encode()
+    for part in body.split(boundary):
+        head, _, data = part.partition(b"\r\n\r\n")
+        if b'name="filename"' in head:
+            return data.rsplit(b"\r\n", 1)[0]
+    return b""
 
 
 def make_handler(state: _State):
@@ -115,7 +148,9 @@ def make_handler(state: _State):
                 if text.index('name="options"') > text.index('name="filename"'):
                     return self._send(400, '{"error":"options must be the first part"}')
                 malicious = "malware" in text or "eicar" in text
-                return self._new_submission(malicious, key="ID")
+                content = _uploaded_file(self.headers.get("Content-Type", ""), body)
+                md5 = hashlib.md5(content).hexdigest()  # noqa: S324 - matching IVX's lookup key
+                return self._new_submission(malicious, key="ID", md5=md5)
             if path.endswith("/submissions/url"):
                 try:
                     payload = json.loads(body or b"{}")
@@ -128,16 +163,44 @@ def make_handler(state: _State):
                 return self._new_submission(malicious, key="id")
             return self._send(404, '{"error":"not found"}')
 
-        def _new_submission(self, malicious: bool, key: str):
+        def _new_submission(self, malicious: bool, key: str, md5: str = ""):
             with state.lock:
                 sid = str(next(state.ids))
-                state.subs[sid] = {"malicious": malicious, "polls": 0}
+                state.subs[sid] = {"malicious": malicious, "polls": 0, "md5": md5}
             return self._send(200, json.dumps([{key: sid}]))
 
         def do_GET(self):  # noqa: N802
-            path = self.path.split("?")[0]
+            path, _, query = self.path.partition("?")
+            params = dict(urllib.parse.parse_qsl(query))
             if not self._authorized():
                 return self._send(401, '{"error":"invalid token"}')
+            if path.rstrip("/").endswith("/alerts"):
+                md5 = params.get("md5", "").lower()
+                if md5 and not re.fullmatch(r"[0-9a-f]{32}", md5):
+                    return self._send(400, '{"error":"invalid md5"}')
+                with state.lock:
+                    hits = [
+                        (sid, sub)
+                        for sid, sub in state.subs.items()
+                        if sub["malicious"] and sub.get("md5") == md5
+                    ]
+                alerts = [
+                    {
+                        "id": sid,
+                        "name": "MALWARE_OBJECT",
+                        "severity": "MAJR",
+                        "malicious": "yes",
+                        "occurred": "2026-01-01 00:00:00 +0000",
+                        "explanation": {
+                            "malwareDetected": {
+                                "malware": [{"name": "Mock.Generic.Trojan", "md5Sum": md5}]
+                            }
+                        },
+                    }
+                    for sid, sub in hits
+                ]
+                payload = {"alert": alerts, "appliance": "ivx-mock", "alertsCount": len(alerts)}
+                return self._send(200, json.dumps(payload))
             sid = path.rstrip("/").rsplit("/", 1)[-1]
             sub = state.subs.get(sid)
             if "/submissions/" in path and sub is None:
@@ -148,7 +211,8 @@ def make_handler(state: _State):
                     status = "In Progress" if sub["polls"] == 1 else "Done"
                 return self._send(200, json.dumps({"submissionStatus": status}))
             if "/submissions/results/" in path:
-                return self._send(200, _result_xml(sid, sub), ctype="application/xml")
+                extended = params.get("info_level") == "extended"
+                return self._send(200, _result_xml(sid, sub, extended), ctype="application/xml")
             return self._send(404, '{"error":"not found"}')
 
     return Handler

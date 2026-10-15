@@ -12,6 +12,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .behaviour import FileEvent, Process, Signature, extract, xml_to_tree
+
 SEVERITY_ORDER = {
     "minr": 1,
     "minor": 1,
@@ -40,6 +42,18 @@ class Alert:
     malicious: str = ""
     occurred: str = ""
     malware: list[Malware] = field(default_factory=list)
+    # Behaviour from extended results (explanation > osChanges); empty otherwise.
+    processes: list[Process] = field(default_factory=list)
+    files: list[FileEvent] = field(default_factory=list)
+    signatures: list[Signature] = field(default_factory=list)
+
+    def add_behaviour(self, tree: Any) -> None:
+        found = extract(tree)
+        self.processes, self.files, self.signatures = (
+            found.processes,
+            found.files,
+            found.signatures,
+        )
 
 
 @dataclass
@@ -83,6 +97,10 @@ class AnalysisResult:
                 if m.name and m.name not in names:
                     names.append(m.name)
         return names
+
+    @property
+    def has_behaviour(self) -> bool:
+        return any(a.processes or a.files or a.signatures for a in self.alerts)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -128,6 +146,7 @@ def _parse_xml(body: str) -> list[Alert]:
                         sha256=_child_text(mw, "sha256"),
                     )
                 )
+        alert.add_behaviour(xml_to_tree(elem))
         alerts.append(alert)
     return alerts
 
@@ -185,16 +204,16 @@ def _parse_json(data: Any) -> list[Alert]:
         if not isinstance(raw, dict):
             continue
         n = _norm_keys(raw)
-        alerts.append(
-            Alert(
-                id=str(n.get("id", "")),
-                name=str(n.get("name", "")),
-                severity=str(n.get("severity", "")),
-                malicious=str(n.get("malicious", "")),
-                occurred=str(n.get("occurred", "")),
-                malware=_find_malware(raw.get("explanation", raw)),
-            )
+        alert = Alert(
+            id=str(n.get("id", "")),
+            name=str(n.get("name", "")),
+            severity=str(n.get("severity", "")),
+            malicious=str(n.get("malicious", "")),
+            occurred=str(n.get("occurred", "")),
+            malware=_find_malware(raw.get("explanation", raw)),
         )
+        alert.add_behaviour(raw)
+        alerts.append(alert)
     return alerts
 
 
