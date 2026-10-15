@@ -14,6 +14,9 @@ Use a **lab** appliance and harmless test files (e.g. the EICAR test string) onl
 
 ## Steps
 
+0. **Connectivity**
+   - [ ] `ivx doctor` passes all steps (save the output)
+   - [ ] Which step failed first, if any? ______
 1. **Authentication**
    - [ ] `ivx -vv check` succeeds
    - [ ] Which login path worked? `/wsapis/common/<ver>/auth/login` or legacy `/wsapis/<ver>/auth/login`
@@ -33,6 +36,7 @@ Use a **lab** appliance and harmless test files (e.g. the EICAR test string) onl
    - [ ] Does the appliance accept `urls` as a JSON array? ______
 6. **Batch + report**
    - [ ] `ivx submit ./folder --wait -f html -o report.html` produces a correct report
+   - [ ] `ivx submit ./folder --wait -f stix -o iocs.json` imports cleanly into your TIP / SIEM
 7. **Session expiry**
    - [ ] A run longer than 15 minutes re-authenticates automatically
 8. **Logout**

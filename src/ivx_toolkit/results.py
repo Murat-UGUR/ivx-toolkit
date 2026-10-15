@@ -49,6 +49,9 @@ class AnalysisResult:
     status: str = ""
     alerts: list[Alert] = field(default_factory=list)
     error: str = ""
+    target_kind: str = ""  # "file", "url" or "" (unknown, e.g. `ivx results <id>`)
+    target_sha256: str = ""  # sha256 of the submitted file, computed locally
+    target_urls: list[str] = field(default_factory=list)
 
     @property
     def verdict(self) -> str:

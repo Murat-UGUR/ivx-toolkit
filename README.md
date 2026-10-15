@@ -2,7 +2,7 @@
 
 Command-line toolkit for the **Trellix IVX** (Intelligent Virtual Execution) sandbox REST API.
 Submit files, folders and URLs, wait for the analysis, and export the verdicts as a table,
-JSON, CSV or a standalone HTML report.
+JSON, CSV or a standalone HTML report, plus IOCs as CSV or a STIX 2.1 bundle.
 
 > [!WARNING]
 > **Status: untested on a live IVX appliance.**
@@ -12,6 +12,29 @@ JSON, CSV or a standalone HTML report.
 > in production. Live-test results and fixes will be tracked in the
 > [CHANGELOG](CHANGELOG.md) — see [docs/live-test-checklist.md](docs/live-test-checklist.md).
 
+## Where it runs
+
+ivx-toolkit does **not** run on the IVX appliance. IVX is a hardened system and nothing is
+installed on it. The toolkit runs on a separate machine (your workstation, a jump host or a
+SOC server) and talks to the appliance only through its web services API over HTTPS, just
+like a browser talks to the web UI:
+
+```
+[workstation / jump host: ivx-toolkit]  --HTTPS (443)-->  [IVX appliance: wsapis API]
+```
+
+Prerequisites on the IVX side:
+
+- **Network:** the machine running the toolkit can reach the IVX management interface on
+  port 443 (or the port you set in `IVX_PORT`).
+- **Web services API enabled** on the appliance.
+- **An account allowed to use the API.** A normal web UI account may not be enough; use a
+  dedicated account with the minimum role needed for submissions.
+- **Certificate:** if the appliance uses a self-signed or internal-CA certificate, point
+  `IVX_CA_BUNDLE` at it. `--insecure` skips verification and is for lab use only.
+
+Run `ivx doctor` first: it checks each of these layers in order and tells you which one fails.
+
 ## Features
 
 - Session login with automatic re-authentication when the token expires (IVX sessions time out
@@ -20,6 +43,8 @@ JSON, CSV or a standalone HTML report.
 - Poll until done, then fetch and normalise results (XML **or** JSON responses)
 - Verdict per submission: `malicious`, `suspicious`, `no-detection`, `pending`, `error`
 - Reports: console table, JSON, CSV, self-contained HTML (light/dark)
+- IOC export from malicious results: flat CSV or a STIX 2.1 bundle with stable object IDs
+- `ivx doctor`: step-by-step connectivity diagnostics (DNS, TCP, TLS, login, API access)
 - `--fail-on-malicious` exit code for scripts and pipelines
 - Credentials only from environment variables or an interactive prompt — never on the
   command line
@@ -55,7 +80,8 @@ required for submissions.
 ## Usage
 
 ```bash
-# 1. Check that authentication works
+# 1. Diagnose connectivity, then check that authentication works
+ivx doctor
 ivx check
 
 # 2. Submit a file and wait for the verdict
@@ -81,6 +107,44 @@ SUBMISSION_ID  TARGET                    VERDICT       MAX_SEVERITY  ALERTS  MAL
 7702           http://example.com/clean  no-detection  -             0       -
 ```
 
+### Connectivity diagnostics
+
+`ivx doctor` stops at the first failing layer and prints a hint:
+
+```
+[PASS] DNS         ivx.lab.local -> 10.0.10.25
+[PASS] TCP         ivx.lab.local:443 is reachable
+[FAIL] TLS         certificate not trusted: self-signed certificate
+                   -> Export the appliance (or issuing CA) certificate and set IVX_CA_BUNDLE to it. For a lab test only, --insecure skips verification.
+[SKIP] API login   skipped after previous failure
+[SKIP] API access  skipped after previous failure
+```
+
+The last step requests the status of a submission ID that cannot exist; a `404` answer proves
+that the session token is accepted by the submissions API without submitting anything.
+
+### IOC export
+
+```bash
+ivx submit ./samples --wait -f iocs -o iocs.csv     # type,value,verdict,malware,submission_id
+ivx submit ./samples --wait -f stix -o iocs.json    # STIX 2.1 bundle
+ivx results 7709 -f stix -o iocs.json
+```
+
+Only results with a **malicious** verdict produce IOCs, so uncertain alerts never end up in a
+block list by accident. Exported indicators:
+
+- SHA-256 of each submitted file (computed locally before upload)
+- MD5 / SHA-256 of malware objects reported by IVX
+- submitted URLs
+
+The STIX bundle contains `indicator`, `malware` and `indicates` relationship objects. Object IDs
+are derived from the indicator value, so exporting the same sample again does not create
+duplicates in a threat intelligence platform. `ivx results <id>` does not know what was
+submitted, so it can only export the hashes IVX reports.
+
+### Other options
+
 Useful submit options: `--urgent`, `--live` (live analysis instead of sandbox), `--force`
 (re-analyse duplicates), `--analysis-timeout`, `--max-wait`, `--interval`,
 `--fail-on-malicious`, `--insecure` (lab only). Run `ivx submit -h` for all of them.
@@ -99,6 +163,7 @@ ivx submit eicar_demo.txt --wait --interval 1
 
 The mock marks any file or URL containing `malware` or `eicar` in its name or content as
 malicious. It imitates the documented request/response shapes only; it is not an emulator.
+To rehearse certificate handling, start it with `--cert cert.pem --key key.pem` to serve HTTPS.
 
 ## API endpoints used
 
@@ -123,15 +188,20 @@ ruff check . && ruff format --check .
 ## Roadmap
 
 - [ ] Validate against a live IVX appliance (see checklist)
-- [ ] Hash pre-check to skip already analysed samples
-- [ ] IOC export (STIX 2.1 / CSV) from extended results
+- [x] IOC export (STIX 2.1 / CSV)
+- [x] Connectivity diagnostics (`ivx doctor`)
+- [ ] Network IOCs (domains, IPs) from extended results, once the live response format is known
 - [ ] MITRE ATT&CK technique extraction
+- [ ] Hash pre-check to skip already analysed samples
 - [ ] Appliance health checks (queue, license, guest images)
 
 ## Türkçe özet
 
 Trellix IVX sandbox REST API'si için komut satırı aracı: dosya, klasör ve URL gönderir, analiz
-bitene kadar bekler, sonucu tablo, JSON, CSV ya da HTML rapor olarak verir.
+bitene kadar bekler, sonucu tablo, JSON, CSV ya da HTML rapor olarak verir; zararlı sonuçlardan
+IOC'leri CSV ya da STIX 2.1 olarak dışa aktarır.
+Araç IVX cihazının **üzerinde çalışmaz**; ayrı bir makineden HTTPS üzerinden API'ye bağlanır.
+Bağlantıyı adım adım sınamak için önce `ivx doctor` çalıştırın.
 **Henüz canlı bir IVX cihazında test edilmedi**; yalnızca dahili mock sunucuya karşı doğrulandı.
 Üretimde kullanmadan önce lab ortamında deneyin.
 

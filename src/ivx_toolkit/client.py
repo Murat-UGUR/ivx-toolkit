@@ -94,7 +94,12 @@ class IVXClient:
         self.settings = settings
         self.session = session or requests.Session()
         self.session.verify = settings.verify_tls
+        # Passed on every request: a session-level `verify` is silently overridden by the
+        # REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE environment variables, which would break
+        # IVX_CA_BUNDLE and --insecure on machines where those variables are set.
+        self._verify = settings.verify_tls
         self.token: str | None = None
+        self.login_url: str | None = None  # which login path worked (for diagnostics)
         self._base = f"{settings.scheme}://{settings.host}:{settings.port}/wsapis"
 
     # ------------------------------------------------------------------ helpers
@@ -125,6 +130,7 @@ class IVXClient:
                 self._url(path),
                 headers=self._headers(extra_headers),
                 timeout=http_timeout,
+                verify=self._verify,
                 **send_kwargs,
             )
         except requests.RequestException as exc:
@@ -182,6 +188,7 @@ class IVXClient:
                     auth=(self.settings.username, self.settings.password),
                     headers={k: v for k, v in self._headers().items() if k != "X-FeApi-Token"},
                     timeout=30,
+                    verify=self._verify,
                 )
             except requests.RequestException as exc:
                 raise IVXError(f"Connection to IVX failed: {exc}") from exc
@@ -194,6 +201,7 @@ class IVXClient:
             if not token:
                 raise IVXError("Login succeeded but no X-FeApi-Token header was returned.")
             self.token = token
+            self.login_url = url
             return token
         raise IVXError(f"Login endpoint not found ({last_error}).", 404)
 
@@ -205,7 +213,9 @@ class IVXClient:
             f"{self._base}/{self.settings.api_version}/auth/logout",
         ):
             try:
-                resp = self.session.post(url, headers=self._headers(), timeout=15)
+                resp = self.session.post(
+                    url, headers=self._headers(), timeout=15, verify=self._verify
+                )
                 if resp.status_code != 404:
                     break
             except requests.RequestException:

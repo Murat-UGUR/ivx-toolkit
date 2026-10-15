@@ -6,12 +6,13 @@ import argparse
 import hashlib
 import logging
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import __version__
+from . import __version__, doctor
 from .client import IVXClient, IVXError, SubmissionOptions
 from .config import Settings
-from .report import render
+from .report import FORMATS, render
 from .results import AnalysisResult, parse_results
 
 log = logging.getLogger("ivx_toolkit")
@@ -63,6 +64,21 @@ def _emit(results: list[AnalysisResult], fmt: str, output: str | None) -> None:
         print(text)
 
 
+@dataclass
+class _Submission:
+    sid: str
+    target: str
+    kind: str  # "file" | "url"
+    sha256: str = ""
+    urls: list[str] = field(default_factory=list)
+
+    def attach(self, result: AnalysisResult) -> AnalysisResult:
+        result.target_kind = self.kind
+        result.target_sha256 = self.sha256
+        result.target_urls = list(self.urls)
+        return result
+
+
 def _fetch_result(
     client: IVXClient, sid: str, target: str, info_level: str | None, status: str = "Done"
 ) -> AnalysisResult:
@@ -77,43 +93,52 @@ def cmd_check(client: IVXClient, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(client: IVXClient, args: argparse.Namespace) -> int:
+    checks = doctor.run(client, timeout=args.timeout)
+    print(doctor.format_checks(checks))
+    failed = any(c.status == doctor.FAIL for c in checks)
+    print("\nAll checks passed." if not failed else "\nSome checks failed; see hints above.")
+    return 1 if failed else 0
+
+
 def cmd_submit(client: IVXClient, args: argparse.Namespace) -> int:
     opts = _options(args)
-    submissions: list[tuple[str, str]] = []  # (submission_id, target)
+    submissions: list[_Submission] = []
 
     for f in _collect_files(args.paths, args.recursive):
         digest = _sha256(f)
         sid = client.submit_file(f, opts)
         _eprint(f"submitted {f}  sha256={digest}  id={sid}")
-        submissions.append((sid, str(f)))
+        submissions.append(_Submission(sid, str(f), "file", sha256=digest))
 
     if args.url:
         sid = client.submit_urls(args.url, opts)
         _eprint(f"submitted {len(args.url)} URL(s)  id={sid}")
-        submissions.append((sid, ", ".join(args.url)))
+        submissions.append(_Submission(sid, ", ".join(args.url), "url", urls=list(args.url)))
 
     if not submissions:
         _eprint("Nothing to submit. Give file/folder paths and/or --url.")
         return 2
 
     if not args.wait:
-        for sid, target in submissions:
-            print(f"{sid}\t{target}")
+        for s in submissions:
+            print(f"{s.sid}\t{s.target}")
         return 0
 
     results: list[AnalysisResult] = []
-    for sid, target in submissions:
+    for s in submissions:
         try:
             state = client.wait(
-                sid,
+                s.sid,
                 max_wait=args.max_wait,
                 interval=args.interval,
-                on_poll=lambda s, st: log.info("%s: %s", s, st),
+                on_poll=lambda sid, st: log.info("%s: %s", sid, st),
             )
-            results.append(_fetch_result(client, sid, target, args.info_level, state))
+            result = _fetch_result(client, s.sid, s.target, args.info_level, state)
         except IVXError as exc:
-            _eprint(f"[!] {sid}: {exc}")
-            results.append(AnalysisResult(submission_id=sid, target=target, error=str(exc)))
+            _eprint(f"[!] {s.sid}: {exc}")
+            result = AnalysisResult(submission_id=s.sid, target=s.target, error=str(exc))
+        results.append(s.attach(result))
     _emit(results, args.format, args.output)
     return 1 if any(r.verdict == "malicious" for r in results) and args.fail_on_malicious else 0
 
@@ -152,6 +177,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("check", help="Test that login works")
 
+    p_doc = sub.add_parser(
+        "doctor",
+        help="Diagnose connectivity step by step (DNS, TCP, TLS, login, API access)",
+    )
+    p_doc.add_argument(
+        "--timeout", type=float, default=5.0, help="Network timeout in seconds (default 5)"
+    )
+
     p_sub = sub.add_parser("submit", help="Submit files, folders and/or URLs for analysis")
     p_sub.add_argument("paths", nargs="*", help="Files or folders to submit")
     p_sub.add_argument("--url", action="append", help="URL to submit (repeatable)")
@@ -186,7 +219,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_res.add_argument("--raw", action="store_true", help="Print the raw API response")
 
     for p in (p_sub, p_res):
-        p.add_argument("-f", "--format", choices=["table", "json", "csv", "html"], default="table")
+        p.add_argument(
+            "-f",
+            "--format",
+            choices=FORMATS,
+            default="table",
+            help="Output format; 'iocs' (CSV) and 'stix' (STIX 2.1) export IOCs "
+            "from malicious results only",
+        )
         p.add_argument("-o", "--output", help="Write the report to this file")
         p.add_argument(
             "--info-level",
@@ -196,7 +236,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-COMMANDS = {"check": cmd_check, "submit": cmd_submit, "status": cmd_status, "results": cmd_results}
+COMMANDS = {
+    "check": cmd_check,
+    "doctor": cmd_doctor,
+    "submit": cmd_submit,
+    "status": cmd_status,
+    "results": cmd_results,
+}
 
 
 def main(argv: list[str] | None = None) -> int:

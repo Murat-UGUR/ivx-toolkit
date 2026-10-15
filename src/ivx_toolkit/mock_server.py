@@ -6,6 +6,9 @@ paths, auth header and response shapes from the public documentation.
     ivx-mock --port 8443
     IVX_SCHEME=http IVX_HOST=127.0.0.1 IVX_PORT=8443 IVX_USER=admin IVX_PASSWORD=admin ivx check
 
+    # HTTPS, to rehearse certificate handling (IVX_CA_BUNDLE / --insecure):
+    ivx-mock --port 8443 --cert cert.pem --key key.pem
+
 Any submitted file or URL whose name contains "malware" or "eicar" is reported
 as malicious; everything else finishes with no detection. Each submission
 reports "In Progress" on its first status poll and "Done" afterwards.
@@ -18,6 +21,7 @@ import base64
 import itertools
 import json
 import secrets
+import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -150,18 +154,36 @@ def make_handler(state: _State):
     return Handler
 
 
-def serve(host: str = "127.0.0.1", port: int = 8443) -> ThreadingHTTPServer:
-    """Create (but do not start) a mock server. Call serve_forever() or run in a thread."""
-    return ThreadingHTTPServer((host, port), make_handler(_State()))
+def serve(
+    host: str = "127.0.0.1",
+    port: int = 8443,
+    certfile: str | None = None,
+    keyfile: str | None = None,
+) -> ThreadingHTTPServer:
+    """Create (but do not start) a mock server. Call serve_forever() or run in a thread.
+
+    With certfile/keyfile it serves HTTPS, otherwise plain HTTP.
+    """
+    server = ThreadingHTTPServer((host, port), make_handler(_State()))
+    if certfile:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile, keyfile)
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        # Clients that reject the certificate abort the handshake; that is expected here.
+        server.handle_error = lambda request, client_address: None
+    return server
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Local mock of the IVX wsapis API (HTTP only)")
+    parser = argparse.ArgumentParser(description="Local mock of the IVX wsapis API")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8443)
+    parser.add_argument("--cert", help="PEM certificate to serve HTTPS")
+    parser.add_argument("--key", help="PEM private key for --cert")
     args = parser.parse_args()
-    server = serve(args.host, args.port)
-    print(f"ivx-mock listening on http://{args.host}:{args.port} (user/pass: admin/admin)")
+    server = serve(args.host, args.port, args.cert, args.key)
+    scheme = "https" if args.cert else "http"
+    print(f"ivx-mock listening on {scheme}://{args.host}:{args.port} (user/pass: admin/admin)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

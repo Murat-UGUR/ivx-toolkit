@@ -1,4 +1,4 @@
-"""Render analysis results as a console table, JSON, CSV or a standalone HTML report."""
+"""Render analysis results as a console table, JSON, CSV, standalone HTML, or IOC exports."""
 
 from __future__ import annotations
 
@@ -9,7 +9,10 @@ import json
 from collections.abc import Sequence
 from datetime import datetime, timezone
 
+from . import iocs
 from .results import AnalysisResult
+
+FORMATS = ["table", "json", "csv", "html", "iocs", "stix"]
 
 COLUMNS = ["submission_id", "target", "verdict", "max_severity", "alerts", "malware"]
 
@@ -132,4 +135,8 @@ def render(results: Sequence[AnalysisResult], fmt: str) -> str:
         return to_csv(results)
     if fmt == "html":
         return to_html(results)
+    if fmt == "iocs":
+        return iocs.to_csv(results)
+    if fmt == "stix":
+        return iocs.to_stix(results)
     return to_table(results)

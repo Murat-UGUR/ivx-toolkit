@@ -4,4 +4,4 @@ from .client import IVXClient, IVXError, SubmissionOptions
 from .results import AnalysisResult, parse_results
 
 __all__ = ["IVXClient", "IVXError", "SubmissionOptions", "AnalysisResult", "parse_results"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
