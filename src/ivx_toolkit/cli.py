@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import logging
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,7 @@ from .client import IVXClient, IVXError, SubmissionOptions
 from .config import Settings
 from .report import FORMATS, render
 from .results import AnalysisResult, parse_results
+from .sanitize import sanitize
 
 log = logging.getLogger("ivx_toolkit")
 
@@ -58,7 +60,9 @@ def _options(args: argparse.Namespace) -> SubmissionOptions:
 def _emit(results: list[AnalysisResult], fmt: str, output: str | None) -> None:
     text = render(results, fmt)
     if output:
-        Path(output).write_text(text, encoding="utf-8")
+        # newline="" keeps CSV "\r\n" line endings intact on Windows (no "\r\r\n").
+        with open(output, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
         _eprint(f"Report written to {output}")
     else:
         print(text)
@@ -79,10 +83,32 @@ class _Submission:
         return result
 
 
+def _raw_extension(content_type: str, body: str) -> str:
+    text = body.lstrip()
+    return "json" if "json" in content_type.lower() or text[:1] in "[{" else "xml"
+
+
+def _save_raw(directory: str | None, sid: str, content_type: str, body: str) -> None:
+    if not directory:
+        return
+    out_dir = Path(directory)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in sid)
+    path = out_dir / f"{safe_id}.{_raw_extension(content_type, body)}"
+    path.write_text(body, encoding="utf-8")
+    _eprint(f"raw response saved to {path}")
+
+
 def _fetch_result(
-    client: IVXClient, sid: str, target: str, info_level: str | None, status: str = "Done"
+    client: IVXClient,
+    sid: str,
+    target: str,
+    info_level: str | None,
+    status: str = "Done",
+    save_raw: str | None = None,
 ) -> AnalysisResult:
     ctype, body = client.results_raw(sid, info_level)
+    _save_raw(save_raw, sid, ctype, body)
     return parse_results(sid, ctype, body, target=target, status=status)
 
 
@@ -134,7 +160,9 @@ def cmd_submit(client: IVXClient, args: argparse.Namespace) -> int:
                 interval=args.interval,
                 on_poll=lambda sid, st: log.info("%s: %s", sid, st),
             )
-            result = _fetch_result(client, s.sid, s.target, args.info_level, state)
+            result = _fetch_result(
+                client, s.sid, s.target, args.info_level, state, save_raw=args.save_raw
+            )
         except IVXError as exc:
             _eprint(f"[!] {s.sid}: {exc}")
             result = AnalysisResult(submission_id=s.sid, target=s.target, error=str(exc))
@@ -152,11 +180,57 @@ def cmd_status(client: IVXClient, args: argparse.Namespace) -> int:
 def cmd_results(client: IVXClient, args: argparse.Namespace) -> int:
     if args.raw:
         for sid in args.ids:
-            _, body = client.results_raw(sid, args.info_level)
+            ctype, body = client.results_raw(sid, args.info_level)
+            _save_raw(args.save_raw, sid, ctype, body)
             print(body)
         return 0
-    results = [_fetch_result(client, sid, "", args.info_level) for sid in args.ids]
+    results = [
+        _fetch_result(client, sid, "", args.info_level, save_raw=args.save_raw) for sid in args.ids
+    ]
     _emit(results, args.format, args.output)
+    return 0
+
+
+# ------------------------------------------------- offline (no appliance needed)
+def cmd_parse(args: argparse.Namespace) -> int:
+    results: list[AnalysisResult] = []
+    for name in args.files:
+        path = Path(name)
+        if not path.is_file():
+            raise IVXError(f"Not found: {path}")
+        body = path.read_text(encoding="utf-8", errors="replace")
+        ctype = "application/json" if path.suffix.lower() == ".json" else ""
+        results.append(parse_results(path.stem, ctype, body, target=str(path)))
+    _emit(results, args.format, args.output)
+    return 0
+
+
+def cmd_sanitize(args: argparse.Namespace) -> int:
+    terms = list(args.mask or [])
+    if args.host_from_env:
+        host = os.environ.get("IVX_HOST")
+        if host:
+            terms.append(host)
+    for name in args.files:
+        path = Path(name)
+        if not path.is_file():
+            raise IVXError(f"Not found: {path}")
+        text, counts = sanitize(
+            path.read_text(encoding="utf-8", errors="replace"),
+            terms=terms,
+            mask_public_ips=args.all_ips,
+        )
+        if args.in_place:
+            out = path
+        elif args.output_dir:
+            out = Path(args.output_dir) / path.name
+            out.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            out = path.with_name(f"{path.stem}.sanitized{path.suffix}")
+        out.write_text(text, encoding="utf-8")
+        summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing found"
+        _eprint(f"{path} -> {out}  (masked: {summary})")
+    _eprint("Review the output before sharing it: masking is best-effort.")
     return 0
 
 
@@ -220,6 +294,39 @@ def build_parser() -> argparse.ArgumentParser:
 
     for p in (p_sub, p_res):
         p.add_argument(
+            "--save-raw",
+            metavar="DIR",
+            help="Also save each raw results response to DIR/<id>.xml|json",
+        )
+
+    p_parse = sub.add_parser(
+        "parse",
+        help="Parse saved raw results files offline (no appliance needed)",
+    )
+    p_parse.add_argument("files", nargs="+", help="Files saved with --save-raw or --raw")
+
+    p_san = sub.add_parser(
+        "sanitize",
+        help="Mask internal IPs, MACs, e-mails and host names in saved files before sharing",
+    )
+    p_san.add_argument("files", nargs="+")
+    p_san.add_argument(
+        "-m",
+        "--mask",
+        action="append",
+        metavar="TERM",
+        help="Extra host name, domain (subdomains included) or user name to mask (repeatable)",
+    )
+    p_san.add_argument(
+        "--host-from-env", action="store_true", help="Also mask the appliance name in $IVX_HOST"
+    )
+    p_san.add_argument("--all-ips", action="store_true", help="Mask public IP addresses too")
+    target = p_san.add_mutually_exclusive_group()
+    target.add_argument("--in-place", action="store_true", help="Overwrite the input files")
+    target.add_argument("--output-dir", help="Write sanitised copies to this directory")
+
+    for p in (p_sub, p_res, p_parse):
+        p.add_argument(
             "-f",
             "--format",
             choices=FORMATS,
@@ -228,6 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
             "from malicious results only",
         )
         p.add_argument("-o", "--output", help="Write the report to this file")
+    for p in (p_sub, p_res):
         p.add_argument(
             "--info-level",
             choices=["concise", "normal", "extended"],
@@ -243,9 +351,22 @@ COMMANDS = {
     "status": cmd_status,
     "results": cmd_results,
 }
+OFFLINE_COMMANDS = {"parse": cmd_parse, "sanitize": cmd_sanitize}
+
+
+def _safe_console() -> None:
+    """Never crash on characters the console code page cannot show (e.g. cp1254 on Windows)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
 
 
 def main(argv: list[str] | None = None) -> int:
+    _safe_console()
     args = build_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG
@@ -258,6 +379,8 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "info_level", None) == "concise":
         args.info_level = None  # concise is the API default; omit the parameter
     try:
+        if args.command in OFFLINE_COMMANDS:
+            return OFFLINE_COMMANDS[args.command](args)
         settings = Settings.from_env(host=args.host)
         if args.insecure:
             settings.verify_tls = False

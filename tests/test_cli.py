@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from ivx_toolkit.cli import main
 
@@ -29,7 +30,7 @@ def test_submit_folder_wait_json(mock_env, tmp_path, capsys):
         ]
     )
     data = json.loads(out.read_text())
-    verdicts = {d["target"].rsplit("/", 1)[-1]: d["verdict"] for d in data}
+    verdicts = {Path(d["target"]).name: d["verdict"] for d in data}
     assert verdicts == {"eicar.com": "malicious", "readme.txt": "no-detection"}
     assert rc == 1  # --fail-on-malicious
 
@@ -57,3 +58,12 @@ def test_missing_host(monkeypatch, capsys):
     monkeypatch.delenv("IVX_HOST", raising=False)
     assert main(["check"]) == 2
     assert "IVX_HOST" in capsys.readouterr().err
+
+
+def test_csv_output_has_clean_line_endings(mock_env, tmp_path):
+    f = tmp_path / "malware.exe"
+    f.write_bytes(b"1")
+    out = tmp_path / "r.csv"
+    main(["submit", str(f), "--wait", "--interval", "0", "-f", "csv", "-o", str(out)])
+    raw = out.read_bytes()
+    assert b"\r\r\n" not in raw and raw.count(b"\r\n") == 2  # header + one row

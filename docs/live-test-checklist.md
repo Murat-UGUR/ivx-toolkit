@@ -27,7 +27,10 @@ Use a **lab** appliance and harmless test files (e.g. the EICAR test string) onl
    - [ ] `ivx status <id>` shows `In Progress`, then `Done`
    - [ ] Any other status values seen (failed, queued, …)? ______
 4. **Results**
-   - [ ] `ivx results <id> --raw` — save the raw output (remove any internal hostnames/IPs)
+   - [ ] `ivx results <id> --info-level extended --save-raw raw/` keeps the raw response
+   - [ ] `ivx sanitize raw/<id>.xml --mask <your-domain> --host-from-env`, then review the
+         `.sanitized` file by eye before sharing it
+   - [ ] `ivx parse raw/<id>.xml` gives the same verdict offline
    - [ ] Is the response XML or JSON? ______
    - [ ] `ivx results <id>` shows the expected verdict, severity and malware name
    - [ ] Repeat with `--info-level normal` and `--info-level extended`

@@ -8,6 +8,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Pending
 - Validation against a live Trellix IVX appliance ([checklist](docs/live-test-checklist.md)).
 
+## [0.3.0] - 2026-10-15
+
+### Added
+- `--save-raw DIR` on `submit` and `results`: keep each raw results response as
+  `DIR/<id>.xml` or `DIR/<id>.json`.
+- `ivx parse FILE...`: parse saved raw responses offline (no appliance, no credentials) into
+  any report or IOC format.
+- `ivx sanitize FILE...`: mask private IPs, MAC and e-mail addresses, appliance/sensor/host
+  names and user-supplied terms with consistent placeholders before sharing; public
+  indicators are kept by default.
+- CI now also runs on Windows (Python 3.9 and 3.13).
+
+### Fixed
+- Windows: CSV reports written with `-o` had broken `\r\r\n` line endings.
+- Windows: the CLI no longer crashes when the console code page cannot display a character
+  (e.g. in malware names or the table's truncation marker).
+
+### Known limitations
+- Still **not tested on a live IVX appliance**.
+
 ## [0.2.0] - 2026-10-15
 
 ### Added

@@ -23,15 +23,19 @@ def tls_mock(tmp_path):
         yield None
         return
     cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
-    subprocess.run(
-        [
-            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-            "-keyout", str(key), "-out", str(cert), "-days", "365",
-            "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost",
-        ],
-        check=True,
-        capture_output=True,
-    )  # fmt: skip
+    try:
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", str(key), "-out", str(cert), "-days", "365",
+                "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost",
+            ],
+            check=True,
+            capture_output=True,
+        )  # fmt: skip
+    except (OSError, subprocess.CalledProcessError):
+        yield None  # old or unusual openssl build: skip these tests
+        return
     server = serve("127.0.0.1", 0, str(cert), str(key))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield server.server_address[1], str(cert)

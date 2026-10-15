@@ -45,6 +45,9 @@ Run `ivx doctor` first: it checks each of these layers in order and tells you wh
 - Reports: console table, JSON, CSV, self-contained HTML (light/dark)
 - IOC export from malicious results: flat CSV or a STIX 2.1 bundle with stable object IDs
 - `ivx doctor`: step-by-step connectivity diagnostics (DNS, TCP, TLS, login, API access)
+- Save raw API responses (`--save-raw`), re-parse them offline (`ivx parse`) and mask internal
+  details before sharing them (`ivx sanitize`)
+- Works on Linux and Windows (both tested in CI)
 - `--fail-on-malicious` exit code for scripts and pipelines
 - Credentials only from environment variables or an interactive prompt — never on the
   command line
@@ -143,6 +146,36 @@ are derived from the indicator value, so exporting the same sample again does no
 duplicates in a threat intelligence platform. `ivx results <id>` does not know what was
 submitted, so it can only export the hashes IVX reports.
 
+### Raw responses: save, re-parse offline, sanitise
+
+During a live test, keep the raw API responses so they can be analysed later without the
+appliance:
+
+```bash
+ivx submit ./samples --wait --save-raw raw/        # writes raw/<id>.xml or raw/<id>.json
+ivx results 7709 --info-level extended --save-raw raw/
+ivx parse raw/*.xml -f html -o report.html          # offline: no appliance, no credentials
+```
+
+Before sharing a raw response (in an issue, with a colleague or a vendor), mask what
+identifies your environment:
+
+```bash
+ivx sanitize raw/7709.xml --mask corp.example --host-from-env
+# -> raw/7709.sanitized.xml  (masked: email=1, host=5, ip=3, mac=1)
+```
+
+Masked by default, with consistent placeholders such as `ip-redacted-1`:
+
+- private, loopback, link-local and other non-public IPv4/IPv6 addresses
+- MAC addresses and e-mail addresses
+- appliance, sensor and host names found in attributes / JSON keys, everywhere they appear
+- anything passed with `--mask` (a domain also covers its subdomains)
+
+Public IP addresses, domains of the sample, hashes and malware names are **kept**, because
+they are the indicators the analysis is about (`--all-ips` masks public IPs too).
+Masking is best-effort: always review the output before sharing it.
+
 ### Other options
 
 Useful submit options: `--urgent`, `--live` (live analysis instead of sandbox), `--force`
@@ -190,6 +223,8 @@ ruff check . && ruff format --check .
 - [ ] Validate against a live IVX appliance (see checklist)
 - [x] IOC export (STIX 2.1 / CSV)
 - [x] Connectivity diagnostics (`ivx doctor`)
+- [x] Raw response capture, offline parsing and sanitising
+- [x] Windows support
 - [ ] Network IOCs (domains, IPs) from extended results, once the live response format is known
 - [ ] MITRE ATT&CK technique extraction
 - [ ] Hash pre-check to skip already analysed samples
@@ -201,7 +236,9 @@ Trellix IVX sandbox REST API'si için komut satırı aracı: dosya, klasör ve U
 bitene kadar bekler, sonucu tablo, JSON, CSV ya da HTML rapor olarak verir; zararlı sonuçlardan
 IOC'leri CSV ya da STIX 2.1 olarak dışa aktarır.
 Araç IVX cihazının **üzerinde çalışmaz**; ayrı bir makineden HTTPS üzerinden API'ye bağlanır.
-Bağlantıyı adım adım sınamak için önce `ivx doctor` çalıştırın.
+Bağlantıyı adım adım sınamak için önce `ivx doctor` çalıştırın. Ham API yanıtlarını
+`--save-raw` ile kaydedip `ivx parse` ile cihaz olmadan yeniden işleyebilir, paylaşmadan önce
+`ivx sanitize` ile iç IP, MAC, e-posta ve host adlarını maskeleyebilirsiniz.
 **Henüz canlı bir IVX cihazında test edilmedi**; yalnızca dahili mock sunucuya karşı doğrulandı.
 Üretimde kullanmadan önce lab ortamında deneyin.
 
