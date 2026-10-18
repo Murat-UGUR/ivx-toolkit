@@ -15,8 +15,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Check tag matches package version
@@ -38,6 +38,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # 0.x releases are published as pre-releases until the live appliance test is done
+          prerelease=""
+          case "${GITHUB_REF_NAME}" in v0.*) prerelease="--prerelease" ;; esac
+          # Release notes: this version's CHANGELOG section
+          awk -v v="${GITHUB_REF_NAME#v}" '
+            $0 ~ "^## \\[" v "\\]" {on=1; next}
+            on && /^## \[/ {exit}
+            on {print}' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md" > notes.md
           gh release create "${GITHUB_REF_NAME}" dist/* \
             --title "ivx-toolkit ${GITHUB_REF_NAME}" \
-            --generate-notes
+            --notes-file notes.md $prerelease
