@@ -1,8 +1,10 @@
 name: Release
 
-# Create a tag such as v0.4.0 (GitHub: Releases > Draft a new release > "Choose a tag",
-# or `git tag v0.4.0 && git push origin v0.4.0`). This workflow tests the code, builds the
-# wheel and source archive, and publishes them on a GitHub Release with generated notes.
+# Create a tag such as v0.5.0 that matches the package version, either in the GitHub UI
+# (Releases > Draft a new release > "Choose a tag" > type v0.5.0 > Publish) or with
+# `git tag v0.5.0 && git push origin v0.5.0`. This workflow tests the code, builds the wheel and
+# source archive and attaches them to the release (creating it, with the CHANGELOG section as
+# notes, if it does not exist yet). 0.x versions are marked as pre-releases.
 
 on:
   push:
@@ -47,6 +49,12 @@ jobs:
             on && /^## \[/ {exit}
             on {print}' CHANGELOG.md > notes.md
           [ -s notes.md ] || echo "See CHANGELOG.md" > notes.md
-          gh release create "${GITHUB_REF_NAME}" dist/* \
-            --title "ivx-toolkit ${GITHUB_REF_NAME}" \
-            --notes-file notes.md $prerelease
+          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            # Release drafted in the GitHub UI (which created the tag): just attach the packages
+            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+            if [ -n "$prerelease" ]; then gh release edit "${GITHUB_REF_NAME}" --prerelease; fi
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/* \
+              --title "ivx-toolkit ${GITHUB_REF_NAME}" \
+              --notes-file notes.md $prerelease
+          fi
